@@ -1,0 +1,2638 @@
+From ebc18a5789689e7c2baaf8b6048ca5b26785f339 Mon Sep 17 00:00:00 2001
+From: Jedediah Smith <jedediah@silencegreys.com>
+Date: Wed, 16 Mar 2016 21:20:38 -0400
+Subject: [PATCH] Block images
+
+
+diff --git a/src/main/java/org/bukkit/Bukkit.java b/src/main/java/org/bukkit/Bukkit.java
+index 8a2e39b..d863a86 100644
+--- a/src/main/java/org/bukkit/Bukkit.java
++++ b/src/main/java/org/bukkit/Bukkit.java
+@@ -13,6 +13,9 @@ import java.util.UUID;
+ import java.util.logging.Logger;
+ 
+ import org.bukkit.Warning.WarningState;
++import org.bukkit.block.BlockIteratorFactory;
++import org.bukkit.block.BlockTransformFactory;
++import org.bukkit.block.RegionFactory;
+ import org.bukkit.boss.BarColor;
+ import org.bukkit.boss.BarFlag;
+ import org.bukkit.boss.BarStyle;
+@@ -32,6 +35,7 @@ import org.bukkit.inventory.InventoryHolder;
+ import org.bukkit.inventory.ItemStack;
+ import org.bukkit.inventory.Recipe;
+ import org.bukkit.map.MapView;
++import org.bukkit.material.BlockOrienter;
+ import org.bukkit.permissions.Permissible;
+ import org.bukkit.plugin.Plugin;
+ import org.bukkit.plugin.PluginManager;
+@@ -1304,6 +1308,11 @@ public final class Bukkit {
+         return runtime().key(id);
+     }
+ 
++    public static BlockIteratorFactory blockIterators() { return runtime().blockIterators(); }
++    public static BlockTransformFactory blockTransforms() { return runtime().blockTransforms(); }
++    public static BlockOrienter blockOrienter() { return runtime().blockOrienter(); }
++    public static RegionFactory regions() { return runtime().regions(); }
++
+     public static PotionBrewRegistry potionRegistry() {
+         return runtime().potionRegistry();
+     }
+diff --git a/src/main/java/org/bukkit/BukkitRuntime.java b/src/main/java/org/bukkit/BukkitRuntime.java
+index 9a3c7e2..48acc93 100644
+--- a/src/main/java/org/bukkit/BukkitRuntime.java
++++ b/src/main/java/org/bukkit/BukkitRuntime.java
+@@ -1,17 +1,32 @@
+ package org.bukkit;
+ 
++import org.bukkit.block.BlockIteratorFactory;
++import org.bukkit.block.BlockTransformFactory;
+ import org.bukkit.block.RegionFactory;
+ import org.bukkit.inventory.ItemFactory;
+ import org.bukkit.inventory.meta.ItemMeta;
+-import org.bukkit.potion.PotionEffectRegistry;
++import org.bukkit.material.BlockOrienter;
+ import org.bukkit.potion.PotionBrewRegistry;
++import org.bukkit.potion.PotionEffectRegistry;
+ import org.bukkit.registry.Key;
+ 
+ public interface BukkitRuntime {
++
+     Key key(String prefix, String id);
+ 
+     Key key(String key);
+ 
++    BlockIteratorFactory blockIterators();
++
++    BlockTransformFactory blockTransforms();
++
++    BlockOrienter blockOrienter();
++
++    /**
++     * Get the region factory.
++     */
++    RegionFactory regions();
++
+     /**
+      * Gets the instance of the item factory (for {@link ItemMeta}).
+      *
+@@ -20,11 +35,6 @@ public interface BukkitRuntime {
+      */
+     ItemFactory getItemFactory();
+ 
+-    /**
+-     * Get the region factory.
+-     */
+-    RegionFactory getRegionFactory();
+-
+     PotionBrewRegistry potionRegistry();
+ 
+     PotionEffectRegistry potionEffectRegistry();
+diff --git a/src/main/java/org/bukkit/Server.java b/src/main/java/org/bukkit/Server.java
+index 4ef7c39..ca169ef 100644
+--- a/src/main/java/org/bukkit/Server.java
++++ b/src/main/java/org/bukkit/Server.java
+@@ -13,6 +13,7 @@ import java.util.UUID;
+ import java.util.logging.Logger;
+ 
+ import org.bukkit.Warning.WarningState;
++import org.bukkit.block.RegionFactory;
+ import org.bukkit.boss.BarColor;
+ import org.bukkit.boss.BarFlag;
+ import org.bukkit.boss.BarStyle;
+@@ -944,6 +945,11 @@ public interface Server extends PluginMessageRecipient, BukkitRuntime, tc.oc.min
+     ItemFactory getItemFactory();
+ 
+     /**
++     * Get the region factory.
++     */
++    RegionFactory regions();
++
++    /**
+      * Gets the instance of the scoreboard manager.
+      * <p>
+      * This will only exist after the first world has loaded.
+@@ -1018,12 +1024,12 @@ public interface Server extends PluginMessageRecipient, BukkitRuntime, tc.oc.min
+ 
+     /**
+      * Create a ChunkData for use in a generator.
+-     * 
++     *
+      * See {@link ChunkGenerator#generateChunkData(org.bukkit.World, java.util.Random, int, int, org.bukkit.generator.ChunkGenerator.BiomeGrid)}
+-     * 
++     *
+      * @param world the world to create the ChunkData for
+      * @return a new ChunkData for the world
+-     * 
++     *
+      */
+     public ChunkGenerator.ChunkData createChunkData(World world);
+ 
+diff --git a/src/main/java/org/bukkit/World.java b/src/main/java/org/bukkit/World.java
+index 14d768d..d61f9a5 100644
+--- a/src/main/java/org/bukkit/World.java
++++ b/src/main/java/org/bukkit/World.java
+@@ -1,6 +1,11 @@
+ package org.bukkit;
+ 
+ import java.io.File;
++
++import org.bukkit.block.BlockImage;
++import org.bukkit.util.Vec3;
++import org.bukkit.block.BlockRegion;
++import org.bukkit.block.BlockTransform;
+ import org.bukkit.generator.ChunkGenerator;
+ import java.util.Collection;
+ import java.util.HashMap;
+@@ -1441,6 +1446,29 @@ public interface World extends PluginMessageRecipient, Metadatable, Physical {
+      */
+     public <T> void spawnParticle(Particle particle, double x, double y, double z, int count, double offsetX, double offsetY, double offsetZ, double extra, T data);
+ 
++    /**
++     * Copy block states in the specified region to a saved image.
++     * @return A copy of the specified block states
++     */
++    BlockImage copyBlocks(BlockRegion region, boolean includeAir, boolean clearSource);
++
++    int pasteBlocks(BlockImage image, BlockTransform transform);
++
++    /**
++     * Copy block states in the given saved image to the given position
++     * in this world.
++     * @param image Block image to copy
++     * @param offset Offset of copied blocks from their original position in the image.
++     * @return The number of blocks in this world affected by the operation.
++     */
++    int pasteBlocks(BlockImage image, Vec3 offset);
++
++    /**
++     * Copy block states in the given saved image to their original position.
++     * @param image Block image to copy
++     * @return The number of blocks in this world affected by the operation.
++     */
++    int pasteBlocks(BlockImage image);
+ 
+     /**
+      * Represents various map environment types that a world may be
+diff --git a/src/main/java/org/bukkit/block/BlockFace.java b/src/main/java/org/bukkit/block/BlockFace.java
+index 58fb195..ddb1969 100644
+--- a/src/main/java/org/bukkit/block/BlockFace.java
++++ b/src/main/java/org/bukkit/block/BlockFace.java
+@@ -1,43 +1,81 @@
+ package org.bukkit.block;
+ 
++import java.util.Arrays;
++import java.util.List;
++
++import org.bukkit.util.ImBlockVector;
++import org.bukkit.util.NumberConversions;
++import org.bukkit.util.Vec3;
++
+ /**
+  * Represents the face of a block
+  */
+ public enum BlockFace {
+-    NORTH(0, 0, -1),
+-    EAST(1, 0, 0),
+-    SOUTH(0, 0, 1),
+-    WEST(-1, 0, 0),
+-    UP(0, 1, 0),
+-    DOWN(0, -1, 0),
+-    NORTH_EAST(NORTH, EAST),
+-    NORTH_WEST(NORTH, WEST),
+-    SOUTH_EAST(SOUTH, EAST),
+-    SOUTH_WEST(SOUTH, WEST),
+-    WEST_NORTH_WEST(WEST, NORTH_WEST),
+-    NORTH_NORTH_WEST(NORTH, NORTH_WEST),
+-    NORTH_NORTH_EAST(NORTH, NORTH_EAST),
+-    EAST_NORTH_EAST(EAST, NORTH_EAST),
+-    EAST_SOUTH_EAST(EAST, SOUTH_EAST),
+-    SOUTH_SOUTH_EAST(SOUTH, SOUTH_EAST),
+-    SOUTH_SOUTH_WEST(SOUTH, SOUTH_WEST),
+-    WEST_SOUTH_WEST(WEST, SOUTH_WEST),
+-    SELF(0, 0, 0);
+-
+-    private final int modX;
+-    private final int modY;
+-    private final int modZ;
+-
+-    private BlockFace(final int modX, final int modY, final int modZ) {
+-        this.modX = modX;
+-        this.modY = modY;
+-        this.modZ = modZ;
+-    }
+-
+-    private BlockFace(final BlockFace face1, final BlockFace face2) {
+-        this.modX = face1.getModX() + face2.getModX();
+-        this.modY = face1.getModY() + face2.getModY();
+-        this.modZ = face1.getModZ() + face2.getModZ();
++    NORTH(8, 0, 0, -1),
++    EAST(12, 1, 0, 0),
++    SOUTH(0, 0, 0, 1),
++    WEST(4, -1, 0, 0),
++    UP(-1, 0, 1, 0),
++    DOWN(-1, 0, -1, 0),
++    NORTH_EAST(10, NORTH, EAST),
++    NORTH_WEST(6, NORTH, WEST),
++    SOUTH_EAST(14, SOUTH, EAST),
++    SOUTH_WEST(2, SOUTH, WEST),
++    WEST_NORTH_WEST(5, WEST, NORTH_WEST),
++    NORTH_NORTH_WEST(7, NORTH, NORTH_WEST),
++    NORTH_NORTH_EAST(9, NORTH, NORTH_EAST),
++    EAST_NORTH_EAST(11, EAST, NORTH_EAST),
++    EAST_SOUTH_EAST(13, EAST, SOUTH_EAST),
++    SOUTH_SOUTH_EAST(15, SOUTH, SOUTH_EAST),
++    SOUTH_SOUTH_WEST(1, SOUTH, SOUTH_WEST),
++    WEST_SOUTH_WEST(3, WEST, SOUTH_WEST),
++    SELF(-1, 0, 0, 0);
++
++    private final int blockYaw; // -1 for undefined
++    private final ImBlockVector direction;
++
++    private BlockFace(final int blockYaw, final int modX, final int modY, final int modZ) {
++        this.blockYaw = blockYaw;
++        this.direction = ImBlockVector.cornerOf(modX, modY, modZ);
++    }
++
++    private BlockFace(final int blockYaw, final BlockFace face1, final BlockFace face2) {
++        this.blockYaw = blockYaw;
++        this.direction = ImBlockVector.cornerOf(
++            face1.getModX() + face2.getModX(),
++            face1.getModY() + face2.getModY(),
++            face1.getModZ() + face2.getModZ()
++        );
++    }
++
++    public boolean isHorizontal() {
++        return blockYaw >= 0;
++    }
++
++    /**
++     * A number from 0 to 15 representing the yaw of this face.
++     *
++     * The number increases in the clockwise direction looking down,
++     * and 0 is due {@link #SOUTH}.
++     *
++     * @throws UnsupportedOperationException if this face is not oriented horizontally
++     */
++    public int blockYaw() {
++        if(blockYaw < 0) {
++            throw new UnsupportedOperationException("Face " + this + " is not a horizontal direction");
++        }
++        return blockYaw;
++    }
++
++    /**
++     * The yaw of this face in degrees, between -180 and +180
++     */
++    public float yaw() {
++        return (blockYaw() + 8) * (360F / 16F) - 180F;
++    }
++
++    public ImBlockVector direction() {
++        return direction;
+     }
+ 
+     /**
+@@ -46,7 +84,7 @@ public enum BlockFace {
+      * @return Amount of X-coordinates to modify
+      */
+     public int getModX() {
+-        return modX;
++        return direction.getBlockX();
+     }
+ 
+     /**
+@@ -55,7 +93,7 @@ public enum BlockFace {
+      * @return Amount of Y-coordinates to modify
+      */
+     public int getModY() {
+-        return modY;
++        return direction.getBlockY();
+     }
+ 
+     /**
+@@ -64,7 +102,7 @@ public enum BlockFace {
+      * @return Amount of Z-coordinates to modify
+      */
+     public int getModZ() {
+-        return modZ;
++        return direction.getBlockZ();
+     }
+ 
+     public BlockFace getOppositeFace() {
+@@ -129,4 +167,103 @@ public enum BlockFace {
+ 
+         return BlockFace.SELF;
+     }
++
++    private static final List<BlockFace> HORIZONTAL;
++
++    static {
++        final BlockFace[] array = new BlockFace[16];
++        for(BlockFace face : values()) {
++            if(face.isHorizontal()) {
++                array[face.blockYaw()] = face;
++            }
++        }
++        HORIZONTAL = Arrays.asList(array);
++    }
++
++    private static final BlockFace[] DIAGONAL = new BlockFace[] {
++        SOUTH_EAST,
++        SOUTH_WEST,
++        NORTH_EAST,
++        NORTH_WEST,
++    };
++
++    private static final BlockFace[] DIAGONAL_Z = new BlockFace[] {
++        SOUTH_SOUTH_EAST,
++        SOUTH_SOUTH_WEST,
++        NORTH_NORTH_EAST,
++        NORTH_NORTH_WEST,
++    };
++
++    private static final BlockFace[] DIAGONAL_X = new BlockFace[] {
++        EAST_SOUTH_EAST,
++        WEST_SOUTH_WEST,
++        EAST_NORTH_EAST,
++        WEST_NORTH_WEST,
++    };
++
++    /**
++     * All horizontally oriented faces, starting with {@link #SOUTH}
++     * and increasing clockwise looking down.
++     */
++    public static List<BlockFace> horizontal() {
++        return HORIZONTAL;
++    }
++
++    /**
++     * The horizontal face representing the given yaw direction.
++     *
++     * The yaw is wrapped to fit in the range 0 to 15.
++     */
++    public static BlockFace byBlockYaw(int yaw) {
++        return HORIZONTAL.get(NumberConversions.mod(yaw, 16));
++    }
++
++    /**
++     * Return the horizontal face that is closest to the given yaw in degrees.
++     */
++    public static BlockFace byYaw(float degrees) {
++        return byBlockYaw(Math.round(degrees * (16F / 360F)));
++    }
++
++    public static BlockFace byDirection(Vec3 direction) {
++        return byDirection(direction.realX(),
++                           direction.realY(),
++                           direction.realZ());
++    }
++
++    public static BlockFace byDirection(double x, double y, double z) {
++        if(y != 0) {
++            // vertical
++            if(x != 0 || z != 0) {
++                throw new IllegalArgumentException("No " + BlockFace.class.getSimpleName() +
++                                                   " for direction " + x + ", " + y + ", " + z);
++            }
++            return y > 0 ? UP : DOWN;
++        } else if(z == 0) {
++            // on X axis (including origin)
++            return x > 0 ? EAST : x < 0 ? WEST : SELF;
++        } else if(x == 0) {
++            // on Z axis
++            return z > 0 ? SOUTH : NORTH;
++        } else {
++            // diagonal
++            int quadrant = 0;
++            if(z < 0) quadrant += 2;
++            if(x < 0) quadrant += 1;
++
++            final double ax = Math.abs(x);
++            final double az = Math.abs(z);
++
++            if(ax > az) {
++                // X major
++                return DIAGONAL_X[quadrant];
++            } else if(ax < az) {
++                // Z major
++                return DIAGONAL_Z[quadrant];
++            } else {
++                // 45 degrees
++                return DIAGONAL[quadrant];
++            }
++        }
++    }
+ }
+diff --git a/src/main/java/org/bukkit/block/BlockImage.java b/src/main/java/org/bukkit/block/BlockImage.java
+new file mode 100644
+index 0000000..c7ed2ad
+--- /dev/null
++++ b/src/main/java/org/bukkit/block/BlockImage.java
+@@ -0,0 +1,30 @@
++package org.bukkit.block;
++
++import java.util.UUID;
++
++import org.bukkit.World;
++
++/**
++ * A set of saved block states.
++ * TODO: Provide a way to actually get {@link BlockState}s from one of these.
++ */
++public interface BlockImage {
++    /**
++     * Unique ID of the {@link World} this image was created from.
++     * This world may or may not still exist. This object does not hold any
++     * reference to the world it came from.
++     */
++    UUID getWorldId();
++
++    /**
++     * The {@link World} this image was created from, or null if
++     * that world is not currently loaded.
++     */
++    World getWorld();
++
++    /**
++     * The set of blocks included in this image. Any blocks excluded from the image
++     * (e.g. air blocks) will also be exlcuded from this region.
++     */
++    BlockRegion getRegion();
++}
+diff --git a/src/main/java/org/bukkit/block/BlockIteratorFactory.java b/src/main/java/org/bukkit/block/BlockIteratorFactory.java
+new file mode 100644
+index 0000000..cc51b53
+--- /dev/null
++++ b/src/main/java/org/bukkit/block/BlockIteratorFactory.java
+@@ -0,0 +1,10 @@
++package org.bukkit.block;
++
++import java.util.Iterator;
++
++import org.bukkit.util.Vec3;
++
++public interface BlockIteratorFactory {
++
++    BlockPositionIterator iterator(Iterator<? extends Vec3> iterator);
++}
+diff --git a/src/main/java/org/bukkit/block/BlockOrientation.java b/src/main/java/org/bukkit/block/BlockOrientation.java
+new file mode 100644
+index 0000000..1b4c2e7
+--- /dev/null
++++ b/src/main/java/org/bukkit/block/BlockOrientation.java
+@@ -0,0 +1,83 @@
++package org.bukkit.block;
++
++import org.bukkit.util.Axis;
++
++public class BlockOrientation {
++
++    private static final BlockOrientation IDENTITY = new BlockOrientation(BlockReflection.NONE, BlockRotation.NONE);
++
++    public static BlockOrientation identity() {
++        return IDENTITY;
++    }
++
++    public static BlockOrientation of(boolean reflect, int quarterTurnsCW) {
++        return new BlockOrientation(reflect ? BlockReflection.FRONT_BACK : BlockReflection.NONE,
++                                    BlockRotation.CW(quarterTurnsCW));
++    }
++
++    public static BlockOrientation of(BlockReflection reflection, BlockRotation rotation) {
++        return new BlockOrientation(reflection, rotation);
++    }
++
++    public static BlockOrientation of(BlockReflection reflection) {
++        return new BlockOrientation(reflection, BlockRotation.NONE);
++    }
++
++    public static BlockOrientation of(BlockRotation rotation) {
++        return new BlockOrientation(BlockReflection.NONE, rotation);
++    }
++
++    private final BlockReflection reflection;
++    private final BlockRotation rotation;
++
++    private BlockOrientation(BlockReflection reflection, BlockRotation rotation) {
++        if(reflection == BlockReflection.LEFT_RIGHT) {
++            reflection = BlockReflection.FRONT_BACK;
++            rotation = BlockRotation.CW(rotation.quarterTurnsCW() + 2);
++        }
++        this.reflection = reflection;
++        this.rotation = rotation;
++    }
++
++    public BlockReflection reflection() {
++        return reflection;
++    }
++
++    public BlockRotation rotation() {
++        return rotation;
++    }
++
++    public boolean isIdentity() {
++        return reflection == BlockReflection.NONE && rotation == BlockRotation.NONE;
++    }
++
++    public BlockFace apply(BlockFace face) {
++        return rotation.apply(reflection.apply(face));
++    }
++
++    public Axis apply(Axis axis) {
++        return rotation.apply(axis);
++    }
++
++    @Override
++    public int hashCode() {
++        return BlockReflection.values().length * reflection.ordinal() +
++               rotation.ordinal();
++    }
++
++    @Override
++    public boolean equals(Object that) {
++        return this == that || (
++            that instanceof BlockOrientation &&
++            this.reflection.equals(((BlockOrientation) that).reflection) &&
++            this.rotation.equals(((BlockOrientation) that).rotation)
++        );
++    }
++
++    @Override
++    public String toString() {
++        return getClass().getSimpleName() +
++               "{reflection=" + reflection +
++               " rotation=" + rotation + "}";
++    }
++}
+diff --git a/src/main/java/org/bukkit/block/BlockPositionIterator.java b/src/main/java/org/bukkit/block/BlockPositionIterator.java
+new file mode 100644
+index 0000000..42f64c2
+--- /dev/null
++++ b/src/main/java/org/bukkit/block/BlockPositionIterator.java
+@@ -0,0 +1,19 @@
++package org.bukkit.block;
++
++import java.util.Iterator;
++
++import org.bukkit.util.Vec3;
++
++/**
++ * A mutable {@link Vec3} used to iterate over some sequence of values.
++ * The iterator itself takes on the values it is iterating over, and returns itself
++ * from the {@link #next()} method, thus avoiding creating a new object for each iteration.
++ *
++ * The {@link #next()} method must be called at least once before reading the
++ * value of the iterator i.e. before calling any of the methods in {@link Vec3}.
++ * The result of calling these methods before the first iteration is undefined.
++ * If iterating over an empty sequence, the iterator cannot be advanced and thus
++ * never has a defined value.
++ */
++public interface BlockPositionIterator extends Vec3, Iterator<Vec3> {
++}
+diff --git a/src/main/java/org/bukkit/block/BlockReflection.java b/src/main/java/org/bukkit/block/BlockReflection.java
+new file mode 100644
+index 0000000..2bf16ff
+--- /dev/null
++++ b/src/main/java/org/bukkit/block/BlockReflection.java
+@@ -0,0 +1,34 @@
++package org.bukkit.block;
++
++import org.bukkit.util.Axis;
++
++public enum BlockReflection {
++
++    NONE,
++    LEFT_RIGHT,
++    FRONT_BACK;
++
++    public static final BlockReflection X = FRONT_BACK;
++    public static final BlockReflection Z = LEFT_RIGHT;
++
++    public static final BlockReflection EAST_WEST = FRONT_BACK;
++    public static final BlockReflection NORTH_SOUTH = LEFT_RIGHT;
++
++    public static BlockReflection inAxis(Axis axis) {
++        switch(axis) {
++            case X: return FRONT_BACK;
++            case Z: return LEFT_RIGHT;
++        }
++        throw new IllegalArgumentException("Cannot reflect blocks in the " + axis + " axis");
++    }
++
++    public BlockFace apply(BlockFace face) {
++        if(!face.isHorizontal()) return face;
++        final int yaw = face.blockYaw();
++        switch(this) {
++            case FRONT_BACK: return BlockFace.byBlockYaw(-yaw);
++            case LEFT_RIGHT: return BlockFace.byBlockYaw(8 - yaw);
++        }
++        return face;
++    }
++}
+diff --git a/src/main/java/org/bukkit/block/BlockRegion.java b/src/main/java/org/bukkit/block/BlockRegion.java
+new file mode 100644
+index 0000000..f7de7c8
+--- /dev/null
++++ b/src/main/java/org/bukkit/block/BlockRegion.java
+@@ -0,0 +1,16 @@
++package org.bukkit.block;
++
++import java.util.Set;
++
++import org.bukkit.util.Vec3;
++
++/**
++ * Represents a set of block coordinates, and supports iteration over them and tests for inclusion.
++ */
++public interface BlockRegion extends Set<Vec3> {
++
++    boolean contains(Vec3 position);
++
++    @Override
++    BlockPositionIterator iterator();
++}
+diff --git a/src/main/java/org/bukkit/block/BlockRotation.java b/src/main/java/org/bukkit/block/BlockRotation.java
+new file mode 100644
+index 0000000..78fba8d
+--- /dev/null
++++ b/src/main/java/org/bukkit/block/BlockRotation.java
+@@ -0,0 +1,47 @@
++package org.bukkit.block;
++
++import org.bukkit.util.Axis;
++import org.bukkit.util.NumberConversions;
++
++public enum BlockRotation {
++
++    NONE,
++    CLOCKWISE_90,
++    CLOCKWISE_180,
++    COUNTERCLOCKWISE_90;
++
++    public static final BlockRotation CLOCKWISE_270 = COUNTERCLOCKWISE_90;
++    public static final BlockRotation COUNTERCLOCKWISE_180 = CLOCKWISE_180;
++    public static final BlockRotation COUNTERCLOCKWISE_270 = CLOCKWISE_90;
++
++    public int quarterTurnsCW() {
++        return ordinal();
++    }
++
++    public int quarterTurnsCCW() {
++        return (4 - ordinal()) % 4;
++    }
++
++    public static BlockRotation CW(int quarterTurns) {
++        return values()[NumberConversions.mod(quarterTurns, 4)];
++    }
++
++    public static BlockRotation CCW(int quarterTurns) {
++        return values()[NumberConversions.mod(-quarterTurns, 4)];
++    }
++
++    public BlockFace apply(BlockFace face) {
++        if(!face.isHorizontal()) return face;
++        return BlockFace.byBlockYaw(face.blockYaw() + 4 * ordinal());
++    }
++
++    public Axis apply(Axis axis) {
++        if(this == BlockRotation.CLOCKWISE_90 || this == BlockRotation.COUNTERCLOCKWISE_90) {
++            switch(axis) {
++                case X: return Axis.Z;
++                case Z: return Axis.X;
++            }
++        }
++        return axis;
++    }
++}
+diff --git a/src/main/java/org/bukkit/block/BlockState.java b/src/main/java/org/bukkit/block/BlockState.java
+index 7899117..fda4ddd 100644
+--- a/src/main/java/org/bukkit/block/BlockState.java
++++ b/src/main/java/org/bukkit/block/BlockState.java
+@@ -54,6 +54,14 @@ public interface BlockState extends Metadatable, Physical {
+      */
+     void setMaterialData(MaterialData materialData);
+ 
++    void reflect(BlockReflection reflection);
++
++    void rotate(BlockRotation rotation);
++
++    void reorient(BlockOrientation orientation);
++
++    void reorient(BlockTransform transform);
++
+     /**
+      * Gets the metadata for this block
+      *
+diff --git a/src/main/java/org/bukkit/block/BlockTransform.java b/src/main/java/org/bukkit/block/BlockTransform.java
+new file mode 100644
+index 0000000..8256336
+--- /dev/null
++++ b/src/main/java/org/bukkit/block/BlockTransform.java
+@@ -0,0 +1,31 @@
++package org.bukkit.block;
++
++import org.bukkit.util.MutableVec3;
++import org.bukkit.util.Vec3;
++
++/**
++ * An affine transformation that can be applied to blocks.
++ * This includes any combination of:
++ *
++ *     - translation by integers (X, Y, Z)
++ *     - rotation around Y in quarter-turns
++ *     - reflection in X and/or Z
++ */
++public interface BlockTransform {
++
++    boolean isIdentity();
++
++    BlockTransform inverse();
++
++    Vec3 apply(Vec3 v);
++
++    void applyInPlace(MutableVec3 v);
++
++    BlockFace apply(BlockFace face);
++
++    BlockTransform apply(BlockTransform that);
++
++    BlockTransform andThen(BlockTransform that);
++
++    BlockOrientation orientation();
++}
+diff --git a/src/main/java/org/bukkit/block/BlockTransformFactory.java b/src/main/java/org/bukkit/block/BlockTransformFactory.java
+new file mode 100644
+index 0000000..c8243a8
+--- /dev/null
++++ b/src/main/java/org/bukkit/block/BlockTransformFactory.java
+@@ -0,0 +1,25 @@
++package org.bukkit.block;
++
++import org.bukkit.util.Axis;
++import org.bukkit.util.Vec3;
++
++public interface BlockTransformFactory {
++
++    BlockTransform identity();
++
++    BlockTransform translation(Vec3 offset);
++
++    BlockTransform translation(int x, int y, int z);
++
++    BlockTransform reorientation(BlockOrientation orientation);
++
++    BlockTransform reflection(BlockReflection reflection);
++
++    BlockTransform reflection(Axis axis);
++
++    BlockTransform rotation(BlockRotation rotation);
++
++    BlockTransform rotationCCW(int quarterTurns);
++
++    BlockTransform rotationCW(int quarterTurns);
++}
+diff --git a/src/main/java/org/bukkit/block/RegionFactory.java b/src/main/java/org/bukkit/block/RegionFactory.java
+new file mode 100644
+index 0000000..c2a76de
+--- /dev/null
++++ b/src/main/java/org/bukkit/block/RegionFactory.java
+@@ -0,0 +1,39 @@
++package org.bukkit.block;
++
++import java.util.Set;
++
++import org.bukkit.World;
++import org.bukkit.material.MaterialData;
++import org.bukkit.util.Vec3;
++
++/**
++ * It makes regions.
++ */
++public interface RegionFactory {
++
++    /**
++     * @return a cuboid shaped region with the given minimum-valued corner and size
++     */
++    BlockRegion cuboid(Vec3 origin, Vec3 size);
++
++    /**
++     * @return the given region with the given transform applied.
++     *         If given the identity transform, it may return the same region.
++     */
++    BlockRegion transform(BlockRegion region, BlockTransform transform);
++
++    /**
++     * @return the given region translated by the given offset.
++     *         If the offset is zero, it may return the same region given.
++     */
++    BlockRegion translate(BlockRegion region, Vec3 offset);
++
++    /**
++     * @return A region containing all blocks in the given region that match one of
++     *         the materials in the given set, in the given world. If the inverted flag
++     *         is true, the given materials are excluded rather than included. The blocks
++     *         are checked immediately and the returned region never changes, even if
++     *         the state of the blocks change.
++     */
++    BlockRegion mask(World world, BlockRegion region, Set<MaterialData> materials, boolean inverted);
++}
+diff --git a/src/main/java/org/bukkit/material/BlockOrienter.java b/src/main/java/org/bukkit/material/BlockOrienter.java
+new file mode 100644
+index 0000000..231be71
+--- /dev/null
++++ b/src/main/java/org/bukkit/material/BlockOrienter.java
+@@ -0,0 +1,17 @@
++package org.bukkit.material;
++
++import org.bukkit.block.BlockOrientation;
++import org.bukkit.block.BlockReflection;
++import org.bukkit.block.BlockRotation;
++import org.bukkit.block.BlockTransform;
++
++public interface BlockOrienter {
++
++    MaterialData reflect(MaterialData material, BlockReflection reflection);
++
++    MaterialData rotate(MaterialData material, BlockRotation rotation);
++
++    MaterialData reorient(MaterialData material, BlockOrientation orientation);
++
++    MaterialData reorient(MaterialData material, BlockTransform transform);
++}
+diff --git a/src/main/java/org/bukkit/util/Axis.java b/src/main/java/org/bukkit/util/Axis.java
+new file mode 100644
+index 0000000..7a3c771
+--- /dev/null
++++ b/src/main/java/org/bukkit/util/Axis.java
+@@ -0,0 +1,40 @@
++package org.bukkit.util;
++
++import org.bukkit.block.BlockFace;
++
++public enum Axis {
++
++    X(ImVector.of(1, 0, 0)),
++    Y(ImVector.of(0, 1, 0)),
++    Z(ImVector.of(0, 0, 1));
++
++    public static final Axis EAST_WEST = X;
++    public static final Axis UP_DOWN = Y;
++    public static final Axis NORTH_SOUTH = Z;
++
++    private final ImVector positive, negative;
++    private final BlockFace positiveFace, negativeFace;
++
++    Axis(ImVector positive) {
++        this.positive = positive;
++        this.negative = positive.negate();
++        this.positiveFace = BlockFace.byDirection(this.positive);
++        this.negativeFace = BlockFace.byDirection(this.negative);
++    }
++
++    public ImVector positive() {
++        return positive;
++    }
++
++    public ImVector negative() {
++        return negative;
++    }
++
++    public BlockFace positiveFace() {
++        return positiveFace;
++    }
++
++    public BlockFace negativeFace() {
++        return negativeFace;
++    }
++}
+diff --git a/src/main/java/org/bukkit/util/BlockVector.java b/src/main/java/org/bukkit/util/BlockVector.java
+index bdf8f6d..649a8d2 100644
+--- a/src/main/java/org/bukkit/util/BlockVector.java
++++ b/src/main/java/org/bukkit/util/BlockVector.java
+@@ -71,6 +71,16 @@ public class BlockVector extends Vector {
+         this.z = z;
+     }
+ 
++    @Override
++    public boolean isFine() {
++        return false;
++    }
++
++    @Override
++    public boolean isCoarse() {
++        return true;
++    }
++
+     /**
+      * Checks if another object is equivalent.
+      *
+@@ -79,13 +89,7 @@ public class BlockVector extends Vector {
+      */
+     @Override
+     public boolean equals(Object obj) {
+-        if (!(obj instanceof BlockVector)) {
+-            return false;
+-        }
+-        BlockVector other = (BlockVector) obj;
+-
+-        return (int) other.getX() == (int) this.x && (int) other.getY() == (int) this.y && (int) other.getZ() == (int) this.z;
+-
++        return Vec3Utils.equals(this, obj);
+     }
+ 
+     /**
+@@ -95,7 +99,7 @@ public class BlockVector extends Vector {
+      */
+     @Override
+     public int hashCode() {
+-        return (Integer.valueOf((int) x).hashCode() >> 13) ^ (Integer.valueOf((int) y).hashCode() >> 7) ^ Integer.valueOf((int) z).hashCode();
++        return Vec3Utils.blockHashCode(this);
+     }
+ 
+     /**
+diff --git a/src/main/java/org/bukkit/util/Cuboid.java b/src/main/java/org/bukkit/util/Cuboid.java
+new file mode 100644
+index 0000000..372b4ac
+--- /dev/null
++++ b/src/main/java/org/bukkit/util/Cuboid.java
+@@ -0,0 +1,364 @@
++package org.bukkit.util;
++
++import java.util.Iterator;
++import java.util.Random;
++
++public class Cuboid {
++
++    private final ImVector min;
++    private final ImVector max;
++
++    private Cuboid(ImVector min, ImVector max) {
++        this.min = min;
++        this.max = max;
++    }
++
++    /**
++     * Create a minimal cuboid enclosing the given pair of points
++     *
++     * The relative order of the points on any axis does not matter.
++     */
++    public static Cuboid between(Vector a, Vector b) {
++        return new Cuboid(ImVector.minimum(a, b), ImVector.maximum(a, b));
++    }
++
++    /**
++     * Create a cuboid with given minimum and maximum corners.
++     *
++     * The coordinates are not sorted, so if any pair of components
++     * are out of order then the cuboid will have "negative" length
++     * on that axis.
++     *
++     * TODO: Reduce the allowed values to what is actually needed.
++     */
++    public static Cuboid fromMinAndMax(Vector min, Vector max) {
++        return new Cuboid(ImVector.copyOf(min), ImVector.copyOf(max));
++    }
++
++    public static Cuboid fromMinAndSize(Vector min, Vector size) {
++        return new Cuboid(ImVector.copyOf(min), ImVector.copyOf(min.plus(size)));
++    }
++
++    /**
++     * Create a minimal bounding box containing all of the given points
++     */
++    public static Cuboid enclosing(Vector... points) {
++        final Vector min = new Vector(Double.POSITIVE_INFINITY);
++        final Vector max = new Vector(Double.NEGATIVE_INFINITY);
++
++        for(Vector p : points) {
++            min.minimize(p);
++            max.maximize(p);
++        }
++
++        return between(min, max);
++    }
++
++    /**
++     * Return the cuboid that is unbounded in all directions
++     */
++    public static Cuboid unbounded() {
++        return UNBOUNDED;
++    }
++    private static final Cuboid UNBOUNDED = new Cuboid(ImVector.of(Double.NEGATIVE_INFINITY),
++                                                       ImVector.of(Double.POSITIVE_INFINITY));
++
++    /**
++     * Return the inverse of the {@link #unbounded()} cuboid
++     */
++    public static Cuboid empty() {
++        return EMPTY;
++    }
++    private static final Cuboid EMPTY = new Cuboid(ImVector.of(Double.POSITIVE_INFINITY),
++                                                   ImVector.of(Double.NEGATIVE_INFINITY));
++
++    /**
++     * Return the largest cuboid contained entirely within both of the given cuboids
++     */
++    public static Cuboid intersect(Cuboid a, Cuboid b) {
++        if(a.contains(b)) {
++            return b;
++        } else if(b.contains(a)) {
++            return a;
++        } else {
++            return new Cuboid(ImVector.maximum(a.min, b.min),
++                              ImVector.minimum(a.max, b.max));
++        }
++    }
++
++    /**
++     * Return the distance from the origin of the given ray to the point
++     * where it first intersects this cuboid. If the ray originates inside
++     * the cuboid, zero is returned.
++     *
++     * If the ray does not intersect the cuboid, but the line of the ray does
++     * intersect (behind the ray's origin), then a negative distance is returned.
++     *
++     * In any other case, NaN is returned.
++     */
++    public double intersectionDistance(Ray ray) {
++        // Find the distances to both boundaries on each axis
++        final ImVector d1 = min.minus(ray.origin()).over(ray.normal());
++        final ImVector d2 = max.minus(ray.origin()).over(ray.normal());
++
++        // Sort the distances into near and far for each axis
++        final ImVector near = ImVector.minimum(d1, d2);
++        final ImVector far = ImVector.maximum(d1, d2);
++
++        // Last near point enters the cuboid
++        // First far point exits the cuboid
++        final double enter = NumberConversions.max(near.getX(), near.getY(), near.getZ());
++        final double exit = NumberConversions.min(far.getX(), far.getY(), far.getZ());
++
++        // If the ray enters the cuboid before it exits, then it intersects
++        return enter <= exit ? enter : Double.NaN;
++    }
++
++    /**
++     * Return the point at which the given ray enters this cuboid,
++     * or null if the ray does not intersect the cuboid. If the ray
++     * originates inside the cuboid, the ray's origin point is returned.
++     */
++    public ImVector intersect(Ray ray) {
++        final double distance = intersectionDistance(ray);
++        if(distance == 0) {
++            return ray.origin();
++        } else if(distance > 0) {
++            return ray.origin().plus(ray.normal().times(distance));
++        } else {
++            return null;
++        }
++    }
++
++    /**
++     * Return the smallest cuboid containing both of the given cuboids
++     */
++    public static Cuboid union(Cuboid a, Cuboid b) {
++        if(a.contains(b)) {
++            return a;
++        } else if(b.contains(a)) {
++            return b;
++        } else {
++            return new Cuboid(ImVector.minimum(a.min, b.min),
++                              ImVector.maximum(a.max, b.max));
++        }
++    }
++
++    /**
++     * Return the smallest cuboid containing the given original cuboid, after subtracting the other given cuboid.
++     */
++    public static Cuboid complement(Cuboid original, Cuboid subtracted) {
++        // The booleans reflect if the subtracted set contains the
++        // original set on each axis. The final bounds for each axis
++        // are then the minimum of the two sets, if the other two axes
++        // are containing, otherwise the bounds of the original set.
++        boolean cx = subtracted.min.getX() < original.min.getX() && subtracted.max.getX() > original.max.getX();
++        boolean cy = subtracted.min.getY() < original.min.getY() && subtracted.max.getY() > original.max.getY();
++        boolean cz = subtracted.min.getZ() < original.min.getZ() && subtracted.max.getZ() > original.max.getZ();
++        return new Cuboid(ImVector.of(cy && cz ? Math.max(original.min.getX(), subtracted.min.getX()) : original.min.getX(),
++                                             cz && cx ? Math.max(original.min.getY(), subtracted.min.getY()) : original.min.getY(),
++                                             cx && cy ? Math.max(original.min.getZ(), subtracted.min.getZ()) : original.min.getZ()),
++                          ImVector.of(cy && cz ? Math.min(original.max.getX(), subtracted.max.getX()) : original.max.getX(),
++                                             cz && cx ? Math.min(original.max.getY(), subtracted.max.getY()) : original.max.getY(),
++                                             cx && cy ? Math.min(original.max.getZ(), subtracted.max.getZ()) : original.max.getZ()));
++    }
++
++    /**
++     * Construct a cuboid by translating this cuboid by the given offset
++     */
++    public Cuboid translate(Vector offset) {
++        return offset.isZero() ? this : new Cuboid(min.plus(offset), max.plus(offset));
++    }
++
++    /**
++     * Is this cuboid bounded on all axes?
++     */
++    public boolean isFinite() {
++        return this.isEmpty() ||
++               !(Double.isInfinite(this.min.getX()) || Double.isInfinite(this.max.getX()) ||
++                 Double.isInfinite(this.min.getY()) || Double.isInfinite(this.max.getY()) ||
++                 Double.isInfinite(this.min.getZ()) || Double.isInfinite(this.max.getZ()));
++    }
++
++    /**
++     * Does this cuboid contain a finite number of blocks?
++     *
++     * This is true if the cuboid is bounded on the horizontal axes.
++     */
++    public boolean isBlockFinite() {
++        return this.isEmpty() ||
++               !(Double.isInfinite(this.min.getX()) || Double.isInfinite(this.max.getX()) ||
++                 Double.isInfinite(this.min.getZ()) || Double.isInfinite(this.max.getZ()));
++    }
++
++    /**
++     * Does this cuboid have zero volume?
++     */
++    public boolean isEmpty() {
++        return min.getX() > max.getX() || min.getY() > max.getY() || min.getZ() > max.getZ();
++    }
++
++    /**
++     * Does this cuboid contain the given point?
++     */
++    public boolean contains(Vector point) {
++        return point.isInAABB(this.min, this.max);
++    }
++
++    /**
++     * Does this cuboid fully enclose the given cuboid?
++     */
++    public boolean contains(Cuboid cuboid) {
++        return this.contains(cuboid.min) && this.contains(cuboid.max);
++    }
++
++    /**
++     * Return the minimum corner of this cuboid
++     */
++    public ImVector minimum() {
++        return this.min;
++    }
++
++    /**
++     * Return the maximum corner of this cuboid
++     */
++    public ImVector maximum() {
++        return this.max;
++    }
++
++    /**
++     * Return the dimensions of this cuboid
++     */
++    public ImVector size() {
++        return max.minus(min);
++    }
++
++    /**
++     * Return the volume of this cuboid
++     */
++    public double volume() {
++        final ImVector size = size();
++        return size.getX() * size.getY() * size.getZ();
++    }
++
++    /**
++     * Return the center point of this cuboid
++     */
++    public ImVector center() {
++        return min.getMidpoint(max);
++    }
++
++    /**
++     * Return the eight corner points of this cuboid
++     */
++    public ImVector[] vertices() {
++        return new ImVector[] {
++            min,
++            ImVector.of(min.getX(), min.getY(), max.getZ()),
++            ImVector.of(min.getX(), max.getY(), min.getZ()),
++            ImVector.of(min.getX(), max.getY(), max.getZ()),
++            ImVector.of(max.getX(), min.getY(), min.getZ()),
++            ImVector.of(max.getX(), min.getY(), max.getZ()),
++            ImVector.of(max.getX(), max.getY(), min.getZ()),
++            max
++        };
++    }
++
++    /**
++     * Generate an evenly distributed random point inside this cuboid,
++     * using the given source of random numbers.
++     *
++     * {@link Random#nextDouble()} is used to choose the individual
++     * components, so the range of possible coordinates includes the
++     * lower bounds of the cuboid, but not the upper bounds.
++     */
++    public ImVector randomPointInside(Random random) {
++        final ImVector size = size();
++        return ImVector.of(min.getX() + size.getX() * random.nextDouble(),
++                                  min.getY() + size.getY() * random.nextDouble(),
++                                  min.getZ() + size.getZ() * random.nextDouble());
++    }
++
++    /**
++     * Return the lowest block with a center point inside this cuboid
++     */
++    public BlockVector minimumBlockInside() {
++        return new BlockVector((int) this.min.getX() + 0.5d,
++                               (int) Math.max(0, Math.min(255, this.min.getY() + 0.5d)),
++                               (int) this.min.getZ() + 0.5d);
++    }
++
++    /**
++     * Return the highest block with a center point inside this cuboid
++     */
++    public BlockVector maximumBlockInside() {
++        return new BlockVector((int) this.max.getX() - 0.5d,
++                               (int) Math.max(0, Math.min(255, this.max.getY() - 0.5d)),
++                               (int) this.max.getZ() - 0.5d);
++    }
++
++    /**
++     * Return the lowest block with a center point that is greater,
++     * on all axes, than any point in the cuboid.
++     *
++     * This block will have coordinates one greater than {@link #maximumBlockInside()}.
++     */
++    public BlockVector minimumBlockOutside() {
++        return new BlockVector((int) this.max.getX() + 0.5d,
++                               (int) Math.max(0, Math.min(256, this.max.getY() + 0.5d)),
++                               (int) this.max.getZ() + 0.5d);
++    }
++
++    /**
++     * Does the cuboid contain the center point of the given block?
++     */
++    public boolean containsBlock(BlockVector v) {
++        BlockVector min = this.minimumBlockInside();
++        BlockVector max = this.maximumBlockInside();
++        return min.getBlockX() <= v.getBlockX() && v.getBlockX() <= max.getBlockX() &&
++               min.getBlockY() <= v.getBlockY() && v.getBlockY() <= max.getBlockY() &&
++               min.getBlockZ() <= v.getBlockZ() && v.getBlockZ() <= max.getBlockZ();
++    }
++
++    public BlockVector blockSize() {
++        return this.minimumBlockOutside().subtract(this.minimumBlockInside()).toBlockVector();
++    }
++
++    public int blockVolume() {
++        BlockVector size = this.blockSize();
++        return (int) (size.getX() * size.getY() * size.getZ());
++    }
++
++    public BlockVector randomBlockInside(Random random) {
++        BlockVector min = this.minimumBlockInside();
++        BlockVector size = this.blockSize();
++        return new BlockVector(min.getX() + random.nextInt(size.getBlockX()),
++                               min.getY() + random.nextInt(size.getBlockY()),
++                               min.getZ() + random.nextInt(size.getBlockZ()));
++    }
++
++    /**
++     * Iterate over all the block locations within
++     * these bounds, in Z-major order.
++     */
++    public Iterator<BlockVector> blockPositionIterator() {
++        if(!this.isBlockFinite()) {
++            throw new UnsupportedOperationException("Cannot get all blocks from an infinite region");
++        }
++        return new CuboidBlockIterator(minimumBlockInside(), minimumBlockOutside());
++    }
++
++    public Iterable<BlockVector> blockPositions() {
++        return new Iterable<BlockVector>() {
++            @Override
++            public Iterator<BlockVector> iterator() {
++                return blockPositionIterator();
++            }
++        };
++    }
++
++    @Override
++    public String toString() {
++        return getClass().getSimpleName() + "{min=[" + min.toString() + "],max=[" + max.toString() + "]}";
++    }
++}
+diff --git a/src/main/java/org/bukkit/util/CuboidBlockIterator.java b/src/main/java/org/bukkit/util/CuboidBlockIterator.java
+new file mode 100644
+index 0000000..35a0559
+--- /dev/null
++++ b/src/main/java/org/bukkit/util/CuboidBlockIterator.java
+@@ -0,0 +1,75 @@
++package org.bukkit.util;
++
++import java.util.Iterator;
++import java.util.NoSuchElementException;
++
++import org.bukkit.util.BlockVector;
++import org.bukkit.util.ImBlockVector;
++import org.bukkit.util.Vector;
++
++/**
++ * Hybrid {@link BlockVector} and {@link Iterator} that iterates all block positions
++ * in a given cuboid volume. The object changes its own state while iterating, and
++ * returns itself from {@link #next()}. In this way, it avoids creating any objects
++ * while iterating. Attempts to mutate the object in any way besides the next() method
++ * will be punished severely.
++ *
++ * The boundaries given to the constructor must be in correct order, or the cuboid will
++ * be considered empty.
++ */
++public class CuboidBlockIterator extends ImBlockVector implements Iterator<BlockVector> {
++
++    private final int xMin, yMin;
++    private final int xMax, yMax, zMax;
++    private int xNext, yNext, zNext;
++    private boolean hasNext;
++
++    public CuboidBlockIterator(int xMin, int yMin, int zMin, int xMax, int yMax, int zMax) {
++        super(xMin, yMin, zMin);
++        this.xNext = this.xMin = xMin;
++        this.yNext = this.yMin = yMin;
++        this.zNext = zMin;
++        this.xMax = xMax;
++        this.yMax = yMax;
++        this.zMax = zMax;
++        this.hasNext = xMin < xMax && yMin < yMax && zMin < zMax;
++    }
++
++    public CuboidBlockIterator(Vector min, Vector max) {
++        this(min.getBlockX(), min.getBlockY(), min.getBlockZ(),
++             max.getBlockX(), max.getBlockY(), max.getBlockZ());
++    }
++
++    @Override
++    public boolean hasNext() {
++        return hasNext;
++    }
++
++    @Override
++    public ImBlockVector next() {
++        if(!hasNext) {
++            throw new NoSuchElementException();
++        }
++
++        x = xNext;
++        y = yNext;
++        z = zNext;
++
++        if(++xNext >= xMax) {
++            xNext = xMin;
++            if(++yNext >= yMax) {
++                yNext = yMin;
++                if(++zNext >= zMax) {
++                    hasNext = false;
++                }
++            }
++        }
++
++        return this;
++    }
++
++    @Override
++    public void remove() {
++        throw new UnsupportedOperationException();
++    }
++}
+diff --git a/src/main/java/org/bukkit/util/ImBlockVector.java b/src/main/java/org/bukkit/util/ImBlockVector.java
+new file mode 100644
+index 0000000..5094f50
+--- /dev/null
++++ b/src/main/java/org/bukkit/util/ImBlockVector.java
+@@ -0,0 +1,132 @@
++package org.bukkit.util;
++
++import org.bukkit.block.Block;
++import org.bukkit.block.BlockState;
++
++/**
++ * Override all mutating methods of {@link BlockVector} and throw an {@link UnsupportedOperationException}.
++ * Subclasses can still access the component fields directly since they have protected access.
++ */
++public class ImBlockVector extends BlockVector {
++
++    public ImBlockVector() {
++    }
++
++    public ImBlockVector(Vector vec) {
++        super(vec);
++    }
++
++    public ImBlockVector(int x, int y, int z) {
++        super(x, y, z);
++    }
++
++    public ImBlockVector(double x, double y, double z) {
++        super(x, y, z);
++    }
++
++    public ImBlockVector(float x, float y, float z) {
++        super(x, y, z);
++    }
++    
++    public boolean isBlockCorner() {
++        return getX() == getBlockX() &&
++               getY() == getBlockY() &&
++               getZ() == getBlockZ();
++    }
++
++    public boolean isBlockCenter() {
++        return getX() == getBlockX() + 0.5 &&
++               getY() == getBlockY() + 0.5 &&
++               getZ() == getBlockZ() + 0.5;
++    }
++
++    public static ImBlockVector cornerOf(int x, int y, int z) {
++        return new Corner(x, y, z);
++    }
++
++    public static ImBlockVector cornerOf(Vec3 v) {
++        return v instanceof Corner ? (Corner) v
++                                   : new Corner(v.blockX(), v.blockY(), v.blockZ());
++    }
++
++    public static ImBlockVector cornerOf(Block block) {
++        return new Corner(block.getX(), block.getY(), block.getZ());
++    }
++
++    public static ImBlockVector cornerOf(BlockState block) {
++        return new Corner(block.getX(), block.getY(), block.getZ());
++    }
++
++    public static ImBlockVector centerOf(int x, int y, int z) {
++        return new Center(x, y, z);
++    }
++
++    public static ImBlockVector centerOf(Vector v) {
++        return v instanceof Center ? (Center) v
++                                   : new Center(v.getBlockX(), v.getBlockY(), v.getBlockZ());
++    }
++
++    public static ImBlockVector centerOf(Block block) {
++        return new Center(block.getX(), block.getY(), block.getZ());
++    }
++
++    public static ImBlockVector centerOf(BlockState block) {
++        return new Center(block.getX(), block.getY(), block.getZ());
++    }
++
++    private static class Corner extends ImBlockVector {
++        public Corner(int x, int y, int z) {
++            super((double) x, (double) y, (double) z);
++        }
++
++        @Override public boolean isBlockCorner() { return true; }
++        @Override public boolean isBlockCenter() { return false; }
++    }
++
++    private static class Center extends ImBlockVector {
++        Center(int x, int y, int z) {
++            super(x + 0.5, y + 0.5, z + 0.5);
++        }
++
++        @Override public boolean isBlockCorner() { return false; }
++        @Override public boolean isBlockCenter() { return true; }
++    }
++
++    protected RuntimeException ex() {
++        return new UnsupportedOperationException("This object is immutable");
++    }
++
++    @Override public Vector add(Vec3 vec) { throw ex(); }
++    @Override public Vector add(int x, int y, int z) { throw ex(); }
++    @Override public Vector add(Vector vec) { throw ex(); }
++    @Override public Vector add(double x, double y, double z) { throw ex(); }
++    @Override public Vector subtract(Vector vec) { throw ex(); }
++    @Override public Vector subtract(double x, double y, double z) { throw ex(); }
++    @Override public Vector multiply(Vector vec) { throw ex(); }
++    @Override public Vector divide(Vector vec) { throw ex(); }
++    @Override public Vector midpoint(Vector other) { throw ex(); }
++    @Override public Vector multiply(int m) { throw ex(); }
++    @Override public Vector multiply(double m) { throw ex(); }
++    @Override public Vector multiply(float m) { throw ex(); }
++    @Override public Vector crossProduct(Vector o) { throw ex(); }
++    @Override public Vector normalize() { throw ex(); }
++    @Override public Vector zero() { throw ex(); }
++    @Override public Vector setX(int x) { throw ex(); }
++    @Override public Vector setX(double x) { throw ex(); }
++    @Override public Vector setX(float x) { throw ex(); }
++    @Override public Vector setY(int y) { throw ex(); }
++    @Override public Vector setY(double y) { throw ex(); }
++    @Override public Vector setY(float y) { throw ex(); }
++    @Override public Vector setZ(int z) { throw ex(); }
++    @Override public Vector setZ(double z) { throw ex(); }
++    @Override public Vector setZ(float z) { throw ex(); }
++    @Override public Vector set(int x, int y, int z) { throw ex(); }
++    @Override public Vector set(double x, double y, double z) { throw ex(); }
++    @Override public Vector set(Vec3 v) { throw ex(); }
++    @Override public Vector set(Vector value) { throw ex(); }
++    @Override public Vector setZero() { throw ex(); }
++    @Override public Vector minimize(Vector v) { throw ex(); }
++    @Override public Vector maximize(Vector v) { throw ex(); }
++    @Override public Vector clamp(Vector min, Vector max) { throw ex(); }
++    @Override public Vector clamp(Cuboid bounds) { throw ex(); }
++}
+diff --git a/src/main/java/org/bukkit/util/ImVector.java b/src/main/java/org/bukkit/util/ImVector.java
+new file mode 100644
+index 0000000..1001e3b
+--- /dev/null
++++ b/src/main/java/org/bukkit/util/ImVector.java
+@@ -0,0 +1,155 @@
++package org.bukkit.util;
++
++/**
++ * An immutable {@link Vector}
++ *
++ * All the mutating methods inherited from {@link Vector}
++ * will throw an exception.
++ */
++public class ImVector extends Vector {
++
++    private static final ImVector ZERO = new ImVector(0, 0, 0);
++
++    private ImVector(double x, double y, double z) {
++        super(x, y, z);
++    }
++
++    public static ImVector of(double x, double y, double z) {
++        return x == 0 && y == 0 && z == 0 ? ZERO : new ImVector(x, y, z);
++    }
++
++    public static ImVector of(double n) {
++        return n == 0 ? ZERO : new ImVector(n, n, n);
++    }
++
++    public static ImVector ofZero() {
++        return ZERO;
++    }
++
++    public static ImVector copyOf(Vec3 v) {
++        return v instanceof ImVector ? (ImVector) v
++                                     : new ImVector(v.realX(), v.realY(), v.realZ());
++    }
++
++    public static ImVector minimum(Vec3 a, Vec3 b) {
++        return of(Math.min(a.realX(), b.realX()),
++                  Math.min(a.realY(), b.realY()),
++                  Math.min(a.realZ(), b.realZ()));
++    }
++
++    public static ImVector maximum(Vec3 a, Vec3 b) {
++        return of(Math.max(a.realX(), b.realX()),
++                  Math.max(a.realY(), b.realY()),
++                  Math.max(a.realZ(), b.realZ()));
++    }
++
++    public static ImVector min(Vec3... a) {
++        double x, y, z;
++        x = y = z = Double.POSITIVE_INFINITY;
++        for(Vec3 v : a) {
++            x = Math.min(x, v.realX());
++            y = Math.min(y, v.realY());
++            z = Math.min(z, v.realZ());
++        }
++        return of(x, y, z);
++    }
++
++    public static ImVector max(Vec3... a) {
++        double x, y, z;
++        x = y = z = Double.NEGATIVE_INFINITY;
++        for(Vec3 v : a) {
++            x = Math.max(x, v.realX());
++            y = Math.max(y, v.realY());
++            z = Math.max(z, v.realZ());
++        }
++        return of(x, y, z);
++    }
++
++    public static ImVector interpolate(Vec3 a, Vec3 b, double n) {
++        return of(NumberConversions.interpolate(a.realX(), b.realX(), n),
++                  NumberConversions.interpolate(a.realY(), b.realY(), n),
++                  NumberConversions.interpolate(a.realZ(), b.realZ(), n));
++    }
++
++    @Override
++    public boolean isMutable() {
++        return false;
++    }
++
++    @Override
++    public ImVector times(int n) {
++        if(n == 0) return ZERO;
++        if(n == 1) return this;
++        return super.times(n);
++    }
++
++    @Override
++    public ImVector times(double n) {
++        if(n == 0) return ZERO;
++        if(n == 1) return this;
++        return super.times(n);
++    }
++
++    @Override
++    public ImVector over(double n) {
++        if(Double.isInfinite(n)) {
++            return ZERO;
++        } else if(n == 1) {
++            return this;
++        } else {
++            return super.over(n);
++        }
++    }
++
++    @Override
++    public ImVector getCrossProduct(Vector v) {
++        return of(this.y * v.z - v.y * this.z,
++                  this.z * v.x - v.z * this.x,
++                  this.x * v.y - v.x * this.y);
++    }
++
++    @Override
++    public ImVector getMidpoint(Vector v) {
++        return of((x + v.getX()) / 2,
++                  (y + v.getY()) / 2,
++                  (z + v.getZ()) / 2);
++    }
++
++    private UnsupportedOperationException ex() {
++        return new UnsupportedOperationException("object is immutable");
++    }
++
++    @Override public Vector add(Vec3 vec) { throw ex(); }
++    @Override public Vector add(int x, int y, int z) { throw ex(); }
++    @Override public Vector add(Vector vec) { throw ex(); }
++    @Override public Vector add(double x, double y, double z) { throw ex(); }
++    @Override public Vector subtract(Vector vec) { throw ex(); }
++    @Override public Vector subtract(double x, double y, double z) { throw ex(); }
++    @Override public Vector multiply(Vector vec) { throw ex(); }
++    @Override public Vector divide(Vector vec) { throw ex(); }
++    @Override public Vector midpoint(Vector other) { throw ex(); }
++    @Override public Vector multiply(int m) { throw ex(); }
++    @Override public Vector multiply(double m) { throw ex(); }
++    @Override public Vector multiply(float m) { throw ex(); }
++    @Override public Vector crossProduct(Vector o) { throw ex(); }
++    @Override public Vector normalize() { throw ex(); }
++    @Override public Vector zero() { throw ex(); }
++    @Override public Vector setX(int x) { throw ex(); }
++    @Override public Vector setX(double x) { throw ex(); }
++    @Override public Vector setX(float x) { throw ex(); }
++    @Override public Vector setY(int y) { throw ex(); }
++    @Override public Vector setY(double y) { throw ex(); }
++    @Override public Vector setY(float y) { throw ex(); }
++    @Override public Vector setZ(int z) { throw ex(); }
++    @Override public Vector setZ(double z) { throw ex(); }
++    @Override public Vector setZ(float z) { throw ex(); }
++    @Override public Vector set(int x, int y, int z) { throw ex(); }
++    @Override public Vector set(double x, double y, double z) { throw ex(); }
++    @Override public Vector set(Vec3 v) { throw ex(); }
++    @Override public Vector set(Vector value) { throw ex(); }
++    @Override public Vector setZero() { throw ex(); }
++    @Override public Vector minimize(Vector v) { throw ex(); }
++    @Override public Vector maximize(Vector v) { throw ex(); }
++    @Override public Vector clamp(Vector min, Vector max) { throw ex(); }
++    @Override public Vector clamp(Cuboid bounds) { throw ex(); }
++}
+diff --git a/src/main/java/org/bukkit/util/MutableVec3.java b/src/main/java/org/bukkit/util/MutableVec3.java
+new file mode 100644
+index 0000000..e7ac12c
+--- /dev/null
++++ b/src/main/java/org/bukkit/util/MutableVec3.java
+@@ -0,0 +1,29 @@
++package org.bukkit.util;
++
++/**
++ * Extends {@link Vec3} with mutating methods.
++ *
++ * Due to the sordid history of Bukkit vector types, some implementors
++ * of this interface are NOT, in fact, mutable. However, all vectors that
++ * are mutable do implement this interface.
++ */
++public interface MutableVec3 extends Vec3 {
++
++    MutableVec3 setX(double x);
++    MutableVec3 setY(double y);
++    MutableVec3 setZ(double z);
++
++    MutableVec3 setX(int x);
++    MutableVec3 setY(int y);
++    MutableVec3 setZ(int z);
++
++    MutableVec3 setZero();
++
++    MutableVec3 set(double x, double y, double z);
++    MutableVec3 set(int x, int y, int z);
++    MutableVec3 set(Vec3 v);
++
++    MutableVec3 add(double x, double y, double z);
++    MutableVec3 add(int x, int y, int z);
++    MutableVec3 add(Vec3 v);
++}
+diff --git a/src/main/java/org/bukkit/util/NumberConversions.java b/src/main/java/org/bukkit/util/NumberConversions.java
+index e6af9ec..04d61c4 100644
+--- a/src/main/java/org/bukkit/util/NumberConversions.java
++++ b/src/main/java/org/bukkit/util/NumberConversions.java
+@@ -121,4 +121,37 @@ public final class NumberConversions {
+             throw new IllegalArgumentException(message);
+         }
+     }
++
++    public static double interpolate(double a, double b, double n) {
++        return (1D - n) * a + n * b;
++    }
++
++    public static double min(double... a) {
++        double n = Double.POSITIVE_INFINITY;
++        for(int i = 0; i < a.length; i++) {
++            n = Math.min(n, a[i]);
++        }
++        return n;
++    }
++
++    public static double max(double... a) {
++        double n = Double.NEGATIVE_INFINITY;
++        for(int i = 0; i < a.length; i++) {
++            n = Math.max(n, a[i]);
++        }
++        return n;
++    }
++
++    public static int mod(int n, int m) {
++        if(m <= 0) {
++            throw new ArithmeticException("Modulus " + m + " must be > 0");
++        }
++        int result = n % m;
++        return (result >= 0) ? result : result + m;
++    }
++
++    public static int hashCode(double n) {
++        final long bits = Double.doubleToLongBits(n);
++        return (int) (bits ^ (bits >>> 32));
++    }
+ }
+diff --git a/src/main/java/org/bukkit/util/Ray.java b/src/main/java/org/bukkit/util/Ray.java
+new file mode 100644
+index 0000000..be98068
+--- /dev/null
++++ b/src/main/java/org/bukkit/util/Ray.java
+@@ -0,0 +1,42 @@
++package org.bukkit.util;
++
++import com.google.common.base.Preconditions;
++import org.bukkit.Location;
++
++public class Ray {
++
++    private final ImVector origin;
++    private final ImVector normal;
++
++    private Ray(ImVector origin, ImVector normal) {
++        this.origin = origin;
++        this.normal = normal;
++    }
++
++    public static Ray fromOriginAndNormal(Vector origin, Vector normal) {
++        Preconditions.checkArgument(!normal.isZero(), "Ray normal must have non-zero length");
++        return new Ray(ImVector.copyOf(origin), ImVector.copyOf(normal.unit()));
++    }
++
++    public static Ray fromOriginAndTarget(Vector origin, Vector target) {
++        final ImVector normal = ImVector.copyOf(target.minus(origin));
++        Preconditions.checkArgument(!normal.isZero(), "Ray target must be different from origin");
++        return new Ray(ImVector.copyOf(origin), normal.unit());
++    }
++
++    public static Ray fromLocation(Location location) {
++        return new Ray(ImVector.copyOf(location), ImVector.copyOf(location.getDirection()));
++    }
++
++    public ImVector origin() {
++        return origin;
++    }
++
++    public ImVector normal() {
++        return normal;
++    }
++
++    public ImVector atDistance(double distance) {
++        return origin.plus(normal.times(distance));
++    }
++}
+diff --git a/src/main/java/org/bukkit/util/Vec3.java b/src/main/java/org/bukkit/util/Vec3.java
+new file mode 100644
+index 0000000..7346d51
+--- /dev/null
++++ b/src/main/java/org/bukkit/util/Vec3.java
+@@ -0,0 +1,123 @@
++package org.bukkit.util;
++
++/**
++ * Base interface for all 3-vector types.
++ *
++ * Subtypes may have either coarse (integer) resolution, or fine (double) resolution,
++ * which can be checked with {@link #isFine()}. Regardless of resolution,
++ * the element values are always available as either ints or doubles.
++ *
++ * Coarse vectors compare equal if and only if their integer components are all equal.
++ * Fine vectors compare equal if and only if their double components are all equal.
++ * Coarse and fine vectors NEVER compare equal to each other, even if they have equal components.
++ *
++ * These rules for equality apply to ALL {@link Vec3} implementations, and any given implementation
++ * must be comparable to any other implementation, and generate identical hash codes.
++ * The methods in {@link Vec3Utils} can be used to easily implement this.
++ *
++ * Note that coarse vectors MAY be able to store and retrieve fractional coordinates,
++ * but they must use only integer coordinates when comparing to other vectors or
++ * generating hash codes.
++ */
++public interface Vec3 {
++
++    /**
++     * Can the value of this vector change?
++     */
++    boolean isMutable();
++
++    /**
++     * Can this vector contain fractional coordinates?
++     */
++    boolean isFine();
++
++    /**
++     * Inverse of {@link #isFine()}
++     */
++    boolean isCoarse();
++
++    /**
++     * Return the ith component of the vector
++     */
++    double realElement(int i);
++
++    double realX();
++
++    double realY();
++
++    double realZ();
++
++    boolean isZero();
++
++    /**
++     * Return the ith component of the vector, as an integer
++     */
++    int blockElement(int i);
++
++    int blockX();
++
++    int blockY();
++
++    int blockZ();
++
++    /**
++     * Return true only if ALL components of this vector are strictly less
++     * than their respective component in the given vector.
++     */
++    boolean isLess(Vec3 v);
++
++    /**
++     * Return true only if ALL components of this vector are less or equal
++     * to their respective component in the given vector.
++     */
++    boolean isLessOrEqual(Vec3 v);
++
++    /**
++     * Return true only if ALL components of this vector are strictly greater
++     * than their respective component in the given vector.
++     */
++    boolean isGreater(Vec3 v);
++
++    /**
++     * Return true only if ALL components of this vector are greater or equal
++     * to their respective component in the given vector.
++     */
++    boolean isGreaterOrEqual(Vec3 v);
++
++    /**
++     * Are the block coordinates of this object all zero?
++     */
++    boolean isBlockZero();
++
++    /**
++     * Return an immutable coarse vector with components equal to the integer
++     * components of this vector.
++     */
++    Vec3 blockVector();
++
++    /**
++     * Return an immutable vector equal to this vector
++     */
++    Vec3 copy();
++
++    /**
++     * Negate this vector
++     */
++    Vec3 negate();
++
++    Vec3 plus(int x, int y, int z);
++
++    ImVector plus(double x, double y, double z);
++
++    Vec3 plus(Vec3 v);
++
++    Vec3 minus(Vec3 v);
++
++    Vec3 times(int n);
++
++    ImVector times(double n);
++
++    Vec3 times(Vec3 v);
++
++    double dot(Vec3 v);
++}
+diff --git a/src/main/java/org/bukkit/util/Vec3Utils.java b/src/main/java/org/bukkit/util/Vec3Utils.java
+new file mode 100644
+index 0000000..e81e61e
+--- /dev/null
++++ b/src/main/java/org/bukkit/util/Vec3Utils.java
+@@ -0,0 +1,62 @@
++package org.bukkit.util;
++
++/**
++ * Utility methods which may be useful in implementing {@link Vec3} subtypes
++ */
++public final class Vec3Utils {
++
++    private Vec3Utils() {}
++
++    private static int combineHashCodes(int x, int y, int z) {
++        // 31 bits gives us roughly 10 bits per axis, and 1021 is the closest prime to 2^10
++        return x + 1021 * (y + 1021 * z);
++    }
++
++    /**
++     * Return the standard hashCode for a vector with block-resolution
++     */
++    public static int realHashCode(Vec3 v) {
++        return combineHashCodes(
++            NumberConversions.hashCode(v.realX()),
++            NumberConversions.hashCode(v.realY()),
++            NumberConversions.hashCode(v.realZ())
++        );
++    }
++
++    public static int blockHashCode(Vec3 v) {
++        return combineHashCodes(
++            v.blockX(),
++            v.blockY(),
++            v.blockZ()
++        );
++    }
++
++    public static int hashCode(Vec3 v) {
++        return v.isFine() ? realHashCode(v)
++                          : blockHashCode(v);
++    }
++
++    public static boolean realEquals(Vec3 a, Vec3 b) {
++        return a.realX() == b.realX() &&
++               a.realY() == b.realY() &&
++               a.realZ() == b.realZ();
++    }
++
++    public static boolean blockEquals(Vec3 a, Vec3 b) {
++        return a.blockX() == b.blockX() &&
++               a.blockY() == b.blockY() &&
++               a.blockZ() == b.blockZ();
++    }
++
++    public static boolean equals(Vec3 a, Vec3 b) {
++        if(a.isFine()) {
++            return b.isFine() && realEquals(a, b);
++        } else {
++            return !b.isFine() && blockEquals(a, b);
++        }
++    }
++
++    public static boolean equals(Vec3 a, Object b) {
++        return a == b || (b instanceof Vec3 && equals(a, (Vec3) b));
++    }
++}
+diff --git a/src/main/java/org/bukkit/util/Vector.java b/src/main/java/org/bukkit/util/Vector.java
+index 052b56b..d353aa6 100644
+--- a/src/main/java/org/bukkit/util/Vector.java
++++ b/src/main/java/org/bukkit/util/Vector.java
+@@ -3,6 +3,8 @@ package org.bukkit.util;
+ import java.util.LinkedHashMap;
+ import java.util.Map;
+ import java.util.Random;
++
++import com.google.common.base.Preconditions;
+ import org.bukkit.Location;
+ import org.bukkit.World;
+ import org.bukkit.configuration.serialization.ConfigurationSerializable;
+@@ -16,7 +18,7 @@ import static org.bukkit.util.NumberConversions.checkFinite;
+  * <code>clone()</code> in order to get a copy.
+  */
+ @SerializableAs("Vector")
+-public class Vector implements Cloneable, ConfigurationSerializable {
++public class Vector implements Cloneable, ConfigurationSerializable, MutableVec3 {
+     private static final long serialVersionUID = -2657651106777219169L;
+ 
+     private static Random random = new Random();
+@@ -66,6 +68,13 @@ public class Vector implements Cloneable, ConfigurationSerializable {
+     }
+ 
+     /**
++     * Construct the vector with all components set to the given value
++     */
++    public Vector(double n) {
++        this(n, n, n);
++    }
++
++    /**
+      * Construct the vector with provided float components.
+      *
+      * @param x X component
+@@ -79,16 +88,60 @@ public class Vector implements Cloneable, ConfigurationSerializable {
+     }
+ 
+     /**
++     * Construct a copy of the given Vector
++     */
++    public Vector(Vec3 that) {
++        this(that.realX(), that.realY(), that.realZ());
++    }
++
++    @Override
++    public boolean isMutable() {
++        return true;
++    }
++
++    @Override
++    public boolean isFine() {
++        return true;
++    }
++
++    @Override
++    public boolean isCoarse() {
++        return false;
++    }
++
++    @Override
++    public Vec3 copy() {
++        return ImVector.copyOf(this);
++    }
++
++    @Override
++    public Vec3 blockVector() {
++        return ImBlockVector.cornerOf(this);
++    }
++
++    @Override
++    public boolean isBlockZero() {
++        return x == 0d && y == 0d && z == 0d;
++    }
++
++    @Override
++    public Vector add(int x, int y, int z) {
++        return add((double) x, (double) y, (double) z);
++    }
++
++    @Override
++    public Vector add(Vec3 v) {
++        return add(v.realX(), v.realY(), v.realZ());
++    }
++
++    /**
+      * Adds a vector to this one
+      *
+      * @param vec The other vector
+      * @return the same vector
+      */
+     public Vector add(Vector vec) {
+-        x += vec.x;
+-        y += vec.y;
+-        z += vec.z;
+-        return this;
++        return add((Vec3) vec);
+     }
+ 
+     /**
+@@ -99,6 +152,7 @@ public class Vector implements Cloneable, ConfigurationSerializable {
+      * @param z Z coordinate
+      * @return the same vector
+      */
++    @Override
+     public Vector add(double x, double y, double z) {
+         this.x += x;
+         this.y += y;
+@@ -299,6 +353,11 @@ public class Vector implements Cloneable, ConfigurationSerializable {
+         return this;
+     }
+ 
++    @Override
++    public double dot(Vec3 v) {
++        return x * v.realX() + y * v.realY() + z * v.realZ();
++    }
++
+     /**
+      * Calculates the dot product of this vector with another. The dot product
+      * is defined as x1*x2+y1*y2+z1*z2. The returned value is a scalar.
+@@ -307,7 +366,7 @@ public class Vector implements Cloneable, ConfigurationSerializable {
+      * @return dot product
+      */
+     public double dot(Vector other) {
+-        return x * other.x + y * other.y + z * other.z;
++        return dot((Vec3) other);
+     }
+ 
+     /**
+@@ -393,6 +452,10 @@ public class Vector implements Cloneable, ConfigurationSerializable {
+         return x >= min.x && x <= max.x && y >= min.y && y <= max.y && z >= min.z && z <= max.z;
+     }
+ 
++    public boolean isInAABB(Cuboid bounds) {
++        return isInAABB(bounds.minimum(), bounds.maximum());
++    }
++
+     /**
+      * Returns whether this vector is within a sphere.
+      *
+@@ -461,12 +524,58 @@ public class Vector implements Cloneable, ConfigurationSerializable {
+         return NumberConversions.floor(z);
+     }
+ 
++    @Override
++    public double realElement(int i) {
++        switch(i) {
++            case 0: return realX();
++            case 1: return realY();
++            case 2: return realZ();
++        }
++        throw new IndexOutOfBoundsException();
++    }
++
++    @Override
++    public int blockElement(int i) {
++        return NumberConversions.floor(realElement(i));
++    }
++
++    @Override
++    public double realX() {
++        return x;
++    }
++
++    @Override
++    public double realY() {
++        return y;
++    }
++
++    @Override
++    public double realZ() {
++        return z;
++    }
++
++    @Override
++    public int blockX() {
++        return getBlockX();
++    }
++
++    @Override
++    public int blockY() {
++        return getBlockY();
++    }
++
++    @Override
++    public int blockZ() {
++        return getBlockZ();
++    }
++
+     /**
+      * Set the X component.
+      *
+      * @param x The new X component.
+      * @return This vector.
+      */
++    @Override
+     public Vector setX(int x) {
+         this.x = x;
+         return this;
+@@ -478,6 +587,7 @@ public class Vector implements Cloneable, ConfigurationSerializable {
+      * @param x The new X component.
+      * @return This vector.
+      */
++    @Override
+     public Vector setX(double x) {
+         this.x = x;
+         return this;
+@@ -500,6 +610,7 @@ public class Vector implements Cloneable, ConfigurationSerializable {
+      * @param y The new Y component.
+      * @return This vector.
+      */
++    @Override
+     public Vector setY(int y) {
+         this.y = y;
+         return this;
+@@ -511,6 +622,7 @@ public class Vector implements Cloneable, ConfigurationSerializable {
+      * @param y The new Y component.
+      * @return This vector.
+      */
++    @Override
+     public Vector setY(double y) {
+         this.y = y;
+         return this;
+@@ -533,6 +645,7 @@ public class Vector implements Cloneable, ConfigurationSerializable {
+      * @param z The new Z component.
+      * @return This vector.
+      */
++    @Override
+     public Vector setZ(int z) {
+         this.z = z;
+         return this;
+@@ -544,6 +657,7 @@ public class Vector implements Cloneable, ConfigurationSerializable {
+      * @param z The new Z component.
+      * @return This vector.
+      */
++    @Override
+     public Vector setZ(double z) {
+         this.z = z;
+         return this;
+@@ -560,22 +674,40 @@ public class Vector implements Cloneable, ConfigurationSerializable {
+         return this;
+     }
+ 
+-    /**
+-     * Checks to see if two objects are equal.
+-     * <p>
+-     * Only two Vectors can ever return true. This method uses a fuzzy match
+-     * to account for floating point errors. The epsilon can be retrieved
+-     * with epsilon.
+-     */
+     @Override
+-    public boolean equals(Object obj) {
+-        if (!(obj instanceof Vector)) {
+-            return false;
+-        }
++    public Vector set(int x, int y, int z) {
++        return set((double) x, (double) y, (double) z);
++    }
++
++    @Override
++    public Vector set(double x, double y, double z) {
++        this.x = x;
++        this.y = y;
++        this.z = z;
++        return this;
++    }
++
++    @Override
++    public Vector set(Vec3 v) {
++        return set(v.blockX(), v.blockY(), v.blockZ());
++    }
++
++    public Vector set(Vector value) {
++        return set(value.getX(), value.getY(), value.getZ());
++    }
+ 
+-        Vector other = (Vector) obj;
++    @Override
++    public Vector setZero() {
++        return set(0, 0, 0);
++    }
+ 
+-        return Math.abs(x - other.x) < epsilon && Math.abs(y - other.y) < epsilon && Math.abs(z - other.z) < epsilon && (this.getClass().equals(obj.getClass()));
++    public boolean isZero() {
++        return x == 0 && y == 0 && z == 0;
++    }
++
++    @Override
++    public boolean equals(Object obj) {
++        return Vec3Utils.equals(this, obj);
+     }
+ 
+     /**
+@@ -585,12 +717,7 @@ public class Vector implements Cloneable, ConfigurationSerializable {
+      */
+     @Override
+     public int hashCode() {
+-        int hash = 7;
+-
+-        hash = 79 * hash + (int) (Double.doubleToLongBits(this.x) ^ (Double.doubleToLongBits(this.x) >>> 32));
+-        hash = 79 * hash + (int) (Double.doubleToLongBits(this.y) ^ (Double.doubleToLongBits(this.y) >>> 32));
+-        hash = 79 * hash + (int) (Double.doubleToLongBits(this.z) ^ (Double.doubleToLongBits(this.z) >>> 32));
+-        return hash;
++        return Vec3Utils.realHashCode(this);
+     }
+ 
+     /**
+@@ -677,6 +804,18 @@ public class Vector implements Cloneable, ConfigurationSerializable {
+         return new Vector(Math.max(v1.x, v2.x), Math.max(v1.y, v2.y), Math.max(v1.z, v2.z));
+     }
+ 
++    public static Vector minimum(Vec3 a, Vec3 b) {
++        return new Vector(Math.min(a.realX(), b.realX()),
++                          Math.min(a.realY(), b.realY()),
++                          Math.min(a.realZ(), b.realZ()));
++    }
++
++    public static Vector maximum(Vec3 a, Vec3 b) {
++        return new Vector(Math.max(a.realX(), b.realX()),
++                          Math.max(a.realY(), b.realY()),
++                          Math.max(a.realZ(), b.realZ()));
++    }
++
+     /**
+      * Gets a random vector with components having a random value between 0
+      * and 1.
+@@ -714,4 +853,139 @@ public class Vector implements Cloneable, ConfigurationSerializable {
+ 
+         return new Vector(x, y, z);
+     }
++
++    // Construction
++
++    public static Vector copyOf(Vec3 v) {
++        return new Vector(v.realX(), v.realY(), v.realZ());
++    }
++
++    public static Vector interpolate(Vector a, Vector b, double n) {
++        return new Vector(NumberConversions.interpolate(a.getX(), b.getX(), n),
++                          NumberConversions.interpolate(a.getY(), b.getY(), n),
++                          NumberConversions.interpolate(a.getZ(), b.getZ(), n));
++    }
++
++
++    // Comparison
++
++    public boolean isLess(Vec3 v) {
++        return x < v.realX() && y < v.realY() && z < v.realZ();
++    }
++
++    public boolean isLessOrEqual(Vec3 v) {
++        return x <= v.realX() && y <= v.realY() && z <= v.realZ();
++    }
++
++    public boolean isGreater(Vec3 v) {
++        return x > v.realX() && y > v.realY() && z > v.realZ();
++    }
++
++    public boolean isGreaterOrEqual(Vec3 v) {
++        return x >= v.realX() && y >= v.realY() && z >= v.realZ();
++    }
++
++
++    // Limiting
++
++    public Vector minimize(Vector v) {
++        if(x > v.getX()) x = v.getX();
++        if(y > v.getY()) y = v.getY();
++        if(z > v.getZ()) z = v.getZ();
++        return this;
++    }
++
++    public Vector maximize(Vector v) {
++        if(x < v.getX()) x = v.getX();
++        if(y < v.getY()) y = v.getY();
++        if(z < v.getZ()) z = v.getZ();
++        return this;
++    }
++
++    public Vector clamp(Vector min, Vector max) {
++        Preconditions.checkArgument(min.isLessOrEqual(max));
++        maximize(min);
++        minimize(max);
++        return this;
++    }
++
++    public Vector clamp(Cuboid bounds) {
++        return clamp(bounds.minimum(), bounds.maximum());
++    }
++
++
++    // Non-mutating operations
++
++    @Override
++    public ImVector plus(Vec3 v) {
++        return ImVector.of(x + v.realX(), y + v.realY(), z + v.realZ());
++    }
++
++    @Override
++    public ImVector plus(int x, int y, int z) {
++        return plus((double) x, (double) y, (double) z);
++    }
++
++    /**
++     * Equivalent to {@link #add(double, double, double)}, but returns a new vector instead of modifying this one
++     */
++    public ImVector plus(double x, double y, double z) {
++        return ImVector.of(this.x + x, this.y + y, this.z + z);
++    }
++
++    @Override
++    public ImVector minus(Vec3 v) {
++        return ImVector.of(x - v.realX(), y - v.realY(), z - v.realZ());
++    }
++
++    /**
++     * Equivalent to {@link #subtract(double, double, double)}, but returns a new vector instead of modifying this one
++     */
++    public ImVector minus(double x, double y, double z) {
++        return ImVector.of(this.x - x, this.y - y, this.z - z);
++    }
++
++    /**
++     * Equivalent to {@link #multiply(double)}, but returns a new vector instead of modifying this one
++     */
++    @Override
++    public ImVector times(double n) {
++        return ImVector.of(x * n, y * n, z * n);
++    }
++
++    @Override
++    public ImVector times(int n) {
++        return ImVector.of(x * n, y * n, z * n);
++    }
++
++    @Override
++    public ImVector times(Vec3 v) {
++        return ImVector.of(x + v.realZ(), y + v.realY(), z + v.realZ());
++    }
++
++    /**
++     * Equivalent to {@link #times(double)} with 1 / n
++     */
++    public ImVector over(double n) {
++        return ImVector.of(x / n, y / n, z / n);
++    }
++
++    /**
++     * Equivalent to {@link #divide(Vector)}, but returns a new vector instead of modifying this one
++     */
++    public ImVector over(Vec3 v) {
++        return ImVector.of(x / v.realX(), y / v.realY(), z / v.realZ());
++    }
++
++    /**
++     * Equivalent to {@link #normalize()}, but returns a new vector instead of modifying this one
++     */
++    public ImVector unit() {
++        return over(length());
++    }
++
++    @Override
++    public ImVector negate() {
++        return ImVector.of(-x, -y, -z);
++    }
+ }
+diff --git a/src/test/java/org/bukkit/block/BlockFaceTest.java b/src/test/java/org/bukkit/block/BlockFaceTest.java
+new file mode 100644
+index 0000000..b67e312
+--- /dev/null
++++ b/src/test/java/org/bukkit/block/BlockFaceTest.java
+@@ -0,0 +1,48 @@
++package org.bukkit.block;
++
++import org.junit.Test;
++
++import static org.junit.Assert.*;
++
++public class BlockFaceTest {
++
++    @Test
++    public void lookupByYaw() throws Exception {
++        for(int i = 0; i < 16; i++) {
++            final BlockFace face = BlockFace.byBlockYaw(i);
++            assertEquals(i, face.blockYaw());
++        }
++    }
++
++    @Test
++    public void lookupByDirection() throws Exception {
++        // vertical
++        assertEquals(BlockFace.SELF, BlockFace.byDirection(0, 0, 0));
++        assertEquals(BlockFace.DOWN, BlockFace.byDirection(0, -1, 0));
++        assertEquals(BlockFace.UP, BlockFace.byDirection(0, 1, 0));
++
++        // cardinals
++        assertEquals(BlockFace.WEST, BlockFace.byDirection(-1, 0, 0));
++        assertEquals(BlockFace.EAST, BlockFace.byDirection(1, 0, 0));
++        assertEquals(BlockFace.NORTH, BlockFace.byDirection(0, 0, -1));
++        assertEquals(BlockFace.SOUTH, BlockFace.byDirection(0, 0, 1));
++
++        // diagonals
++        assertEquals(BlockFace.NORTH_WEST, BlockFace.byDirection(-1, 0, -1));
++        assertEquals(BlockFace.NORTH_EAST, BlockFace.byDirection(1, 0, -1));
++        assertEquals(BlockFace.SOUTH_WEST, BlockFace.byDirection(-1, 0, 1));
++        assertEquals(BlockFace.SOUTH_EAST, BlockFace.byDirection(1, 0, 1));
++
++        // Z major
++        assertEquals(BlockFace.NORTH_NORTH_WEST, BlockFace.byDirection(-1, 0, -2));
++        assertEquals(BlockFace.NORTH_NORTH_EAST, BlockFace.byDirection(1, 0, -2));
++        assertEquals(BlockFace.SOUTH_SOUTH_WEST, BlockFace.byDirection(-1, 0, 2));
++        assertEquals(BlockFace.SOUTH_SOUTH_EAST, BlockFace.byDirection(1, 0, 2));
++
++        // X major
++        assertEquals(BlockFace.WEST_NORTH_WEST, BlockFace.byDirection(-2, 0, -1));
++        assertEquals(BlockFace.EAST_NORTH_EAST, BlockFace.byDirection(2, 0, -1));
++        assertEquals(BlockFace.WEST_SOUTH_WEST, BlockFace.byDirection(-2, 0, 1));
++        assertEquals(BlockFace.EAST_SOUTH_EAST, BlockFace.byDirection(2, 0, 1));
++    }
++}
+diff --git a/src/test/java/org/bukkit/block/BlockReflectionTest.java b/src/test/java/org/bukkit/block/BlockReflectionTest.java
+new file mode 100644
+index 0000000..8cf7891
+--- /dev/null
++++ b/src/test/java/org/bukkit/block/BlockReflectionTest.java
+@@ -0,0 +1,32 @@
++package org.bukkit.block;
++
++import org.junit.Test;
++
++import static org.junit.Assert.*;
++
++public class BlockReflectionTest {
++
++    static String swap(String in, String a, String b) {
++        return in.replace(a, "*")
++                 .replace(b, a)
++                 .replace("*", b);
++    }
++
++    void applyToFace(BlockReflection reflection, String here, String there) {
++        for(BlockFace face : BlockFace.values()) {
++            BlockFace expected = BlockFace.valueOf(swap(face.name(), here, there));
++            BlockFace actual = reflection.apply(face);
++            assertEquals(expected, actual);
++        }
++    }
++
++    @Test
++    public void applyToFace() throws Exception {
++        for(BlockFace face : BlockFace.values()) {
++            assertEquals(face, BlockReflection.NONE.apply(face));
++        }
++
++        applyToFace(BlockReflection.NORTH_SOUTH, "NORTH", "SOUTH");
++        applyToFace(BlockReflection.EAST_WEST, "EAST", "WEST");
++    }
++}
+diff --git a/src/test/java/org/bukkit/block/BlockRotationTest.java b/src/test/java/org/bukkit/block/BlockRotationTest.java
+new file mode 100644
+index 0000000..cf5e426
+--- /dev/null
++++ b/src/test/java/org/bukkit/block/BlockRotationTest.java
+@@ -0,0 +1,44 @@
++package org.bukkit.block;
++
++import org.bukkit.util.Axis;
++import org.junit.Test;
++
++import static org.junit.Assert.*;
++
++public class BlockRotationTest {
++
++    @Test
++    public void applyToFace() throws Exception {
++        for(BlockFace face : BlockFace.values()) {
++            assertEquals(face, BlockRotation.NONE.apply(face));
++        }
++
++        for(int turns = 1; turns < 4; turns++) {
++            for(BlockFace face : BlockFace.values()) {
++                BlockFace expected = face.isHorizontal() ? BlockFace.byBlockYaw(face.blockYaw() + turns * 4)
++                                                         : face;
++                BlockFace actual = BlockRotation.CW(turns).apply(face);
++                assertEquals(expected, actual);
++            }
++        }
++    }
++
++    @Test
++    public void applytoAxis() throws Exception {
++        assertEquals(Axis.X, BlockRotation.NONE.apply(Axis.X));
++        assertEquals(Axis.Y, BlockRotation.NONE.apply(Axis.Y));
++        assertEquals(Axis.Z, BlockRotation.NONE.apply(Axis.Z));
++
++        assertEquals(Axis.Z, BlockRotation.CLOCKWISE_90.apply(Axis.X));
++        assertEquals(Axis.Y, BlockRotation.CLOCKWISE_90.apply(Axis.Y));
++        assertEquals(Axis.X, BlockRotation.CLOCKWISE_90.apply(Axis.Z));
++
++        assertEquals(Axis.X, BlockRotation.CLOCKWISE_180.apply(Axis.X));
++        assertEquals(Axis.Y, BlockRotation.CLOCKWISE_180.apply(Axis.Y));
++        assertEquals(Axis.Z, BlockRotation.CLOCKWISE_180.apply(Axis.Z));
++
++        assertEquals(Axis.Z, BlockRotation.COUNTERCLOCKWISE_90.apply(Axis.X));
++        assertEquals(Axis.Y, BlockRotation.COUNTERCLOCKWISE_90.apply(Axis.Y));
++        assertEquals(Axis.X, BlockRotation.COUNTERCLOCKWISE_90.apply(Axis.Z));
++    }
++}
+-- 
+1.9.0
+
